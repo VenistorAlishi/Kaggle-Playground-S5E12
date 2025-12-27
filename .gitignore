@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data files (large)
+*.csv
+!sample_submission.csv
+
+# Checkpoints (optional - можно включить в репозиторий или нет)
+# checkpoints/
+
+# CatBoost info
+catboost_info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
