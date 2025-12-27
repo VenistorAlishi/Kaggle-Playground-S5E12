@@ -29,7 +29,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 # Константы
 RANDOM_STATE = 42
-N_FOLDS = 5
+N_FOLDS = 7  # Увеличено количество фолдов для более стабильной оценки
 
 # Файлы для сохранения промежуточных результатов
 CHECKPOINT_DIR = 'checkpoints'
@@ -120,35 +120,40 @@ print(f"Numerical features: {len(numerical_features)}")
 # Feature Engineering
 print("\n[2/6] Feature Engineering...")
 
-def create_features(df, train_stats=None):
-    """Создание новых признаков
+def create_features(df, train_stats=None, y_train=None):
+    """Создание новых признаков с улучшенным feature engineering
     
     Args:
         df: DataFrame для обработки
         train_stats: словарь со статистиками train (mean, std) для нормализации
+        y_train: целевая переменная для target encoding (только для train)
     """
     df = df.copy()
     
-    # BMI категории
+    # BMI категории (более детальные)
     df['bmi_category'] = pd.cut(df['bmi'], 
-                                bins=[0, 18.5, 25, 30, 100], 
-                                labels=['Underweight', 'Normal', 'Overweight', 'Obese'])
+                                bins=[0, 18.5, 25, 30, 35, 100], 
+                                labels=['Underweight', 'Normal', 'Overweight', 'Obese1', 'Obese2'])
     df['bmi_category'] = df['bmi_category'].astype(str)
     
-    # Возрастные группы
+    # Возрастные группы (более детальные)
     df['age_group'] = pd.cut(df['age'], 
-                             bins=[0, 30, 45, 60, 100], 
-                             labels=['Young', 'Middle', 'Senior', 'Elderly'])
+                             bins=[0, 25, 35, 45, 55, 65, 100], 
+                             labels=['VeryYoung', 'Young', 'Middle', 'Senior', 'Elderly', 'VeryElderly'])
     df['age_group'] = df['age_group'].astype(str)
     
     # Комбинированные признаки здоровья
     df['bp_ratio'] = df['systolic_bp'] / (df['diastolic_bp'] + 1e-5)
+    df['bp_mean'] = (df['systolic_bp'] + df['diastolic_bp']) / 2
+    df['bp_pulse_pressure'] = df['systolic_bp'] - df['diastolic_bp']
     df['cholesterol_ratio'] = df['ldl_cholesterol'] / (df['hdl_cholesterol'] + 1e-5)
     df['total_cholesterol_hdl'] = df['cholesterol_total'] / (df['hdl_cholesterol'] + 1e-5)
     df['non_hdl_cholesterol'] = df['cholesterol_total'] - df['hdl_cholesterol']
     df['ldl_hdl_ratio'] = df['ldl_cholesterol'] / (df['hdl_cholesterol'] + 1e-5)
+    df['triglycerides_hdl'] = df['triglycerides'] / (df['hdl_cholesterol'] + 1e-5)
+    df['cholesterol_balance'] = df['hdl_cholesterol'] - df['ldl_cholesterol']
     
-    # Индексы здоровья
+    # Индексы здоровья (улучшенные)
     df['health_score'] = (df['diet_score'] + 
                          (df['physical_activity_minutes_per_week'] / 100) + 
                          (df['sleep_hours_per_day'] / 8))
@@ -157,66 +162,170 @@ def create_features(df, train_stats=None):
                              (df['physical_activity_minutes_per_week'] / 200) * 0.3 +
                              (df['sleep_hours_per_day'] / 8) * 0.3)
     
+    df['comprehensive_health_score'] = (
+        df['diet_score'] * 0.3 +
+        (df['physical_activity_minutes_per_week'] / 300) * 0.25 +
+        (df['sleep_hours_per_day'] / 8) * 0.2 +
+        (1 - df['screen_time_hours_per_day'] / 12) * 0.15 +
+        (1 - df['alcohol_consumption_per_week'] / 14) * 0.1
+    )
+    
     df['risk_factors_count'] = (df['family_history_diabetes'] + 
                                 df['hypertension_history'] + 
                                 df['cardiovascular_history'])
     
-    # Взаимодействия
+    # Расширенные взаимодействия
     df['bmi_age'] = df['bmi'] * df['age']
     df['bmi_waist_hip'] = df['bmi'] * df['waist_to_hip_ratio']
+    df['bmi_systolic'] = df['bmi'] * df['systolic_bp']
+    df['bmi_diastolic'] = df['bmi'] * df['diastolic_bp']
+    df['bmi_cholesterol'] = df['bmi'] * df['cholesterol_total']
+    df['bmi_heart_rate'] = df['bmi'] * df['heart_rate']
     df['activity_sleep'] = df['physical_activity_minutes_per_week'] * df['sleep_hours_per_day']
     df['age_activity'] = df['age'] * df['physical_activity_minutes_per_week']
-    df['bmi_systolic'] = df['bmi'] * df['systolic_bp']
+    df['age_bp'] = df['age'] * df['systolic_bp']
+    df['age_cholesterol'] = df['age'] * df['cholesterol_total']
+    df['waist_hip_age'] = df['waist_to_hip_ratio'] * df['age']
+    df['diet_activity'] = df['diet_score'] * (df['physical_activity_minutes_per_week'] / 100)
+    df['sleep_diet'] = df['sleep_hours_per_day'] * df['diet_score']
     
-    # Логические признаки
+    # Логические признаки (расширенные)
     df['high_bp'] = ((df['systolic_bp'] >= 130) | (df['diastolic_bp'] >= 85)).astype(int)
+    df['stage1_hypertension'] = ((df['systolic_bp'] >= 130) & (df['systolic_bp'] < 140)).astype(int)
+    df['stage2_hypertension'] = (df['systolic_bp'] >= 140).astype(int)
     df['high_cholesterol'] = (df['cholesterol_total'] >= 200).astype(int)
+    df['very_high_cholesterol'] = (df['cholesterol_total'] >= 240).astype(int)
     df['high_ldl'] = (df['ldl_cholesterol'] >= 100).astype(int)
+    df['very_high_ldl'] = (df['ldl_cholesterol'] >= 160).astype(int)
     df['low_hdl'] = (df['hdl_cholesterol'] < 40).astype(int)
+    df['very_low_hdl'] = (df['hdl_cholesterol'] < 35).astype(int)
     df['high_triglycerides'] = (df['triglycerides'] >= 150).astype(int)
+    df['very_high_triglycerides'] = (df['triglycerides'] >= 200).astype(int)
     df['obese'] = (df['bmi'] >= 30).astype(int)
+    df['severely_obese'] = (df['bmi'] >= 35).astype(int)
     df['overweight'] = ((df['bmi'] >= 25) & (df['bmi'] < 30)).astype(int)
     df['high_waist_hip'] = (df['waist_to_hip_ratio'] > 0.9).astype(int)
+    df['very_high_waist_hip'] = (df['waist_to_hip_ratio'] > 0.95).astype(int)
+    df['low_activity'] = (df['physical_activity_minutes_per_week'] < 150).astype(int)
+    df['poor_sleep'] = ((df['sleep_hours_per_day'] < 6) | (df['sleep_hours_per_day'] > 9)).astype(int)
+    df['high_screen_time'] = (df['screen_time_hours_per_day'] > 6).astype(int)
+    df['high_alcohol'] = (df['alcohol_consumption_per_week'] > 7).astype(int)
     
-    # Метаболические признаки
+    # Метаболические признаки (расширенные)
     df['metabolic_risk'] = (df['high_bp'].astype(int) + 
                             df['high_cholesterol'].astype(int) + 
                             df['high_triglycerides'].astype(int) + 
                             df['obese'].astype(int))
+    
+    df['cardiovascular_risk'] = (df['high_bp'].astype(int) + 
+                                 df['high_cholesterol'].astype(int) + 
+                                 df['high_ldl'].astype(int) + 
+                                 df['low_hdl'].astype(int) + 
+                                 df['obese'].astype(int))
+    
+    df['diabetes_risk_score'] = (
+        df['obese'].astype(int) * 2 +
+        df['overweight'].astype(int) * 1 +
+        df['high_bp'].astype(int) * 1.5 +
+        df['high_cholesterol'].astype(int) * 1 +
+        df['low_hdl'].astype(int) * 1 +
+        df['high_triglycerides'].astype(int) * 1 +
+        df['family_history_diabetes'] * 2 +
+        df['hypertension_history'] * 1.5 +
+        df['cardiovascular_history'] * 1
+    )
     
     # Нормализованные признаки (используем статистики train для test)
     if train_stats is None:
         # Вычисляем статистики для train
         age_mean, age_std = df['age'].mean(), df['age'].std()
         bmi_mean, bmi_std = df['bmi'].mean(), df['bmi'].std()
-        train_stats = {'age': (age_mean, age_std), 'bmi': (bmi_mean, bmi_std)}
+        bp_mean, bp_std = df['systolic_bp'].mean(), df['systolic_bp'].std()
+        chol_mean, chol_std = df['cholesterol_total'].mean(), df['cholesterol_total'].std()
+        train_stats = {
+            'age': (age_mean, age_std), 
+            'bmi': (bmi_mean, bmi_std),
+            'bp': (bp_mean, bp_std),
+            'cholesterol': (chol_mean, chol_std)
+        }
     else:
         # Используем статистики train для test
         age_mean, age_std = train_stats['age']
         bmi_mean, bmi_std = train_stats['bmi']
+        bp_mean, bp_std = train_stats['bp']
+        chol_mean, chol_std = train_stats['cholesterol']
     
     df['age_normalized'] = (df['age'] - age_mean) / (age_std + 1e-5)
     df['bmi_normalized'] = (df['bmi'] - bmi_mean) / (bmi_std + 1e-5)
+    df['bp_normalized'] = (df['systolic_bp'] - bp_mean) / (bp_std + 1e-5)
+    df['cholesterol_normalized'] = (df['cholesterol_total'] - chol_mean) / (chol_std + 1e-5)
     
-    # Полиномиальные признаки (важные взаимодействия)
+    # Полиномиальные признаки (расширенные)
     df['age_squared'] = df['age'] ** 2
     df['bmi_squared'] = df['bmi'] ** 2
+    df['age_cubed'] = df['age'] ** 3
+    df['bmi_cubed'] = df['bmi'] ** 3
+    df['bp_squared'] = df['systolic_bp'] ** 2
+    
+    # Логарифмические признаки (для skewed distributions)
+    df['log_bmi'] = np.log1p(df['bmi'])
+    df['log_age'] = np.log1p(df['age'])
+    df['log_cholesterol'] = np.log1p(df['cholesterol_total'])
+    df['log_triglycerides'] = np.log1p(df['triglycerides'])
+    df['log_activity'] = np.log1p(df['physical_activity_minutes_per_week'] + 1)
+    
+    # Квантильные признаки
+    if train_stats is None:
+        # Для train вычисляем квантили
+        df['bmi_quantile'] = pd.qcut(df['bmi'], q=5, labels=False, duplicates='drop')
+        df['age_quantile'] = pd.qcut(df['age'], q=5, labels=False, duplicates='drop')
+        df['cholesterol_quantile'] = pd.qcut(df['cholesterol_total'], q=5, labels=False, duplicates='drop')
+    else:
+        # Для test используем квантили из train (если сохранены)
+        if 'bmi_quantiles' in train_stats:
+            df['bmi_quantile'] = pd.cut(df['bmi'], bins=train_stats['bmi_quantiles'], labels=False, include_lowest=True)
+            df['age_quantile'] = pd.cut(df['age'], bins=train_stats['age_quantiles'], labels=False, include_lowest=True)
+            df['cholesterol_quantile'] = pd.cut(df['cholesterol_total'], bins=train_stats['cholesterol_quantiles'], labels=False, include_lowest=True)
+        else:
+            df['bmi_quantile'] = 0
+            df['age_quantile'] = 0
+            df['cholesterol_quantile'] = 0
+    
+    # Сохраняем квантили для test
+    if train_stats is not None and 'bmi_quantiles' not in train_stats:
+        pass  # Квантили уже должны быть сохранены
     
     return df, train_stats
 
 # Создаем признаки для train и сохраняем статистики
-X_train, train_stats = create_features(X_train)
+X_train, train_stats = create_features(X_train, y_train=y_train)
+# Сохраняем квантили для использования в test
+if 'bmi_quantiles' not in train_stats:
+    train_stats['bmi_quantiles'] = pd.qcut(X_train['bmi'], q=5, retbins=True, duplicates='drop')[1]
+    train_stats['age_quantiles'] = pd.qcut(X_train['age'], q=5, retbins=True, duplicates='drop')[1]
+    train_stats['cholesterol_quantiles'] = pd.qcut(X_train['cholesterol_total'], q=5, retbins=True, duplicates='drop')[1]
 # Создаем признаки для test используя статистики train
-X_test, _ = create_features(X_test, train_stats)
+X_test, _ = create_features(X_test, train_stats=train_stats)
 
 # Обновление списков признаков
 categorical_features.extend(['bmi_category', 'age_group'])
-new_numerical = ['bp_ratio', 'cholesterol_ratio', 'total_cholesterol_hdl', 'non_hdl_cholesterol',
-                 'ldl_hdl_ratio', 'health_score', 'lifestyle_score', 'risk_factors_count',
-                 'bmi_age', 'bmi_waist_hip', 'activity_sleep', 'age_activity', 'bmi_systolic',
-                 'high_bp', 'high_cholesterol', 'high_ldl', 'low_hdl', 'high_triglycerides',
-                 'obese', 'overweight', 'high_waist_hip', 'metabolic_risk',
-                 'age_normalized', 'bmi_normalized', 'age_squared', 'bmi_squared']
+new_numerical = [
+    'bp_ratio', 'bp_mean', 'bp_pulse_pressure', 'cholesterol_ratio', 'total_cholesterol_hdl', 
+    'non_hdl_cholesterol', 'ldl_hdl_ratio', 'triglycerides_hdl', 'cholesterol_balance',
+    'health_score', 'lifestyle_score', 'comprehensive_health_score', 'risk_factors_count',
+    'bmi_age', 'bmi_waist_hip', 'bmi_systolic', 'bmi_diastolic', 'bmi_cholesterol', 'bmi_heart_rate',
+    'activity_sleep', 'age_activity', 'age_bp', 'age_cholesterol', 'waist_hip_age',
+    'diet_activity', 'sleep_diet',
+    'high_bp', 'stage1_hypertension', 'stage2_hypertension', 'high_cholesterol', 'very_high_cholesterol',
+    'high_ldl', 'very_high_ldl', 'low_hdl', 'very_low_hdl', 'high_triglycerides', 'very_high_triglycerides',
+    'obese', 'severely_obese', 'overweight', 'high_waist_hip', 'very_high_waist_hip',
+    'low_activity', 'poor_sleep', 'high_screen_time', 'high_alcohol',
+    'metabolic_risk', 'cardiovascular_risk', 'diabetes_risk_score',
+    'age_normalized', 'bmi_normalized', 'bp_normalized', 'cholesterol_normalized',
+    'age_squared', 'bmi_squared', 'age_cubed', 'bmi_cubed', 'bp_squared',
+    'log_bmi', 'log_age', 'log_cholesterol', 'log_triglycerides', 'log_activity',
+    'bmi_quantile', 'age_quantile', 'cholesterol_quantile'
+]
 numerical_features.extend(new_numerical)
 
 print(f"Total features after engineering: {len(X_train.columns)}")
@@ -299,15 +408,17 @@ if not skip_lgb:
             'objective': 'binary',
             'metric': 'auc',
             'boosting_type': 'gbdt',
-            'num_leaves': 63,
-            'learning_rate': 0.03,
-            'feature_fraction': 0.85,
-            'bagging_fraction': 0.85,
+            'num_leaves': 127,  # Увеличено для большей сложности
+            'learning_rate': 0.02,  # Немного снижено для лучшей сходимости
+            'feature_fraction': 0.8,  # Немного снижено для регуляризации
+            'bagging_fraction': 0.8,
             'bagging_freq': 5,
-            'min_child_samples': 20,
-            'min_split_gain': 0.1,
-            'reg_alpha': 0.1,
-            'reg_lambda': 0.1,
+            'min_child_samples': 15,  # Снижено для большей детализации
+            'min_split_gain': 0.05,  # Снижено для большего количества разбиений
+            'reg_alpha': 0.2,  # Увеличено для регуляризации
+            'reg_lambda': 0.3,  # Увеличено для регуляризации
+            'max_depth': 12,  # Добавлено ограничение глубины
+            'min_data_in_leaf': 10,  # Добавлено для регуляризации
             'verbose': -1,
             'random_state': RANDOM_STATE
         }
@@ -316,7 +427,7 @@ if not skip_lgb:
             params,
             train_data,
             valid_sets=[val_data],
-            num_boost_round=2000,
+            num_boost_round=3000,  # Увеличено для лучшей сходимости
             callbacks=[lgb.early_stopping(stopping_rounds=100), lgb.log_evaluation(0)]
         )
         
@@ -386,17 +497,21 @@ if not skip_cat:
         sys.stdout.flush()
         
         model = cb.CatBoostClassifier(
-            iterations=2000,
-            learning_rate=0.03,
-            depth=7,
-            l2_leaf_reg=5,
+            iterations=3000,  # Увеличено количество итераций
+            learning_rate=0.02,  # Снижено для лучшей сходимости
+            depth=8,  # Увеличена глубина
+            l2_leaf_reg=3,  # Снижено для большей гибкости
             loss_function='Logloss',
             eval_metric='AUC',
             random_seed=RANDOM_STATE,
-            verbose=100,  # Изменено: показываем прогресс каждые 100 итераций
-            early_stopping_rounds=100,
-            min_data_in_leaf=20,
-            thread_count=-1  # Используем все доступные потоки
+            verbose=100,
+            early_stopping_rounds=150,  # Увеличено для более стабильного early stopping
+            min_data_in_leaf=15,  # Снижено для большей детализации
+            thread_count=-1,
+            bootstrap_type='Bayesian',  # Улучшенный бутстрап
+            bagging_temperature=0.8,  # Для Bayesian bootstrap
+            random_strength=0.5,  # Добавлено для регуляризации
+            border_count=128  # Увеличено для лучшей точности
         )
         
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting CatBoost training...", flush=True)
@@ -484,21 +599,23 @@ if not skip_xgb:
         y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
         
         model = xgb.XGBClassifier(
-            n_estimators=2000,
-            max_depth=7,
-            learning_rate=0.03,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            min_child_weight=5,
-            gamma=0.1,
-            reg_alpha=0.1,
-            reg_lambda=1.5,
+            n_estimators=3000,  # Увеличено количество итераций
+            max_depth=8,  # Увеличена глубина
+            learning_rate=0.02,  # Снижено для лучшей сходимости
+            subsample=0.8,  # Немного снижено для регуляризации
+            colsample_bytree=0.8,
+            colsample_bylevel=0.8,  # Добавлено для дополнительной регуляризации
+            min_child_weight=3,  # Снижено для большей детализации
+            gamma=0.2,  # Увеличено для регуляризации
+            reg_alpha=0.2,  # Увеличено для регуляризации
+            reg_lambda=2.0,  # Увеличено для регуляризации
             random_state=RANDOM_STATE,
             eval_metric='auc',
             use_label_encoder=False,
             tree_method='hist',
             grow_policy='lossguide',
-            early_stopping_rounds=100  # Перемещено в конструктор для новых версий XGBoost
+            max_leaves=127,  # Добавлено ограничение листьев
+            early_stopping_rounds=150  # Увеличено для более стабильного early stopping
         )
         
         model.fit(
@@ -533,20 +650,44 @@ print("[5/6] Ансамблирование...")
 print("="*60)
 ensemble_start = time.time()
 
-# Взвешенное усреднение на основе OOF AUC
-weights = np.array([lgb_auc, cat_auc, xgb_auc])
-weights = weights / weights.sum()
+# Улучшенное взвешенное усреднение на основе OOF AUC с оптимизацией
+# Используем квадрат AUC для более сильного взвешивания лучших моделей
+auc_scores = np.array([lgb_auc, cat_auc, xgb_auc])
+# Экспоненциальное взвешивание для лучших моделей
+weights_exp = np.exp(auc_scores * 10)  # Масштабируем для лучшей дифференциации
+weights_exp = weights_exp / weights_exp.sum()
 
-print(f"[{datetime.now().strftime('%H:%M:%S')}] Model weights:")
+# Также пробуем простое взвешивание по квадрату
+weights_squared = auc_scores ** 2
+weights_squared = weights_squared / weights_squared.sum()
+
+# Пробуем оба варианта и выбираем лучший
+oof_ensemble_exp = (weights_exp[0] * oof_predictions_lgb + 
+                    weights_exp[1] * oof_predictions_cat + 
+                    weights_exp[2] * oof_predictions_xgb)
+
+oof_ensemble_squared = (weights_squared[0] * oof_predictions_lgb + 
+                        weights_squared[1] * oof_predictions_cat + 
+                        weights_squared[2] * oof_predictions_xgb)
+
+auc_exp = roc_auc_score(y_train, oof_ensemble_exp)
+auc_squared = roc_auc_score(y_train, oof_ensemble_squared)
+
+# Выбираем лучший метод взвешивания
+if auc_exp > auc_squared:
+    weights = weights_exp
+    ensemble_auc = auc_exp
+    method = "exponential"
+else:
+    weights = weights_squared
+    ensemble_auc = auc_squared
+    method = "squared"
+
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Model weights ({method}):")
 print(f"  LightGBM: {weights[0]:.4f} (AUC: {lgb_auc:.5f})")
 print(f"  CatBoost:  {weights[1]:.4f} (AUC: {cat_auc:.5f})")
 print(f"  XGBoost:   {weights[2]:.4f} (AUC: {xgb_auc:.5f})")
 
-oof_ensemble = (weights[0] * oof_predictions_lgb + 
-                weights[1] * oof_predictions_cat + 
-                weights[2] * oof_predictions_xgb)
-
-ensemble_auc = roc_auc_score(y_train, oof_ensemble)
 ensemble_time = time.time() - ensemble_start
 print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Ensemble OOF AUC: {ensemble_auc:.5f} | Time: {ensemble_time:.1f}s")
 
