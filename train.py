@@ -337,7 +337,7 @@ print("\n[3/6] Подготовка данных...")
 print("Applying Target Encoding to categorical features...", flush=True)
 from sklearn.model_selection import KFold
 
-def target_encode(train_df, test_df, cat_cols, target, n_splits=5, smooth=1.0):
+def target_encode(train_df, test_df, cat_cols, target, n_splits=5, smooth=10.0):
     """Target Encoding с кросс-валидацией для предотвращения переобучения"""
     train_encoded = train_df.copy()
     test_encoded = test_df.copy()
@@ -382,10 +382,10 @@ def target_encode(train_df, test_df, cat_cols, target, n_splits=5, smooth=1.0):
     
     return train_encoded, test_encoded
 
-# Применяем target encoding
+# Применяем target encoding с улучшенным smoothing
 categorical_features_filtered = [col for col in categorical_features if col in X_train.columns]
 X_train_encoded, X_test_encoded = target_encode(
-    X_train, X_test, categorical_features_filtered, y_train, n_splits=5, smooth=5.0
+    X_train, X_test, categorical_features_filtered, y_train, n_splits=5, smooth=10.0
 )
 print(f"Target encoding applied to {len(categorical_features_filtered)} categorical features", flush=True)
 
@@ -395,35 +395,9 @@ for col in categorical_features_filtered:
         X_train_encoded[col] = X_train_encoded[col].astype('category')
         X_test_encoded[col] = X_test_encoded[col].astype('category')
 
-# Feature Selection - удаляем наименее важные признаки
-print("Applying Feature Selection...", flush=True)
-from sklearn.ensemble import RandomForestClassifier
-
-# Используем Random Forest для оценки важности признаков
-print("  Computing feature importance with Random Forest...", flush=True)
-rf_selector = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=RANDOM_STATE, n_jobs=-1)
-rf_selector.fit(X_train_encoded.select_dtypes(include=[np.number]), y_train)
-
-# Получаем важность признаков
-feature_importance = pd.DataFrame({
-    'feature': X_train_encoded.select_dtypes(include=[np.number]).columns,
-    'importance': rf_selector.feature_importances_
-}).sort_values('importance', ascending=False)
-
-# Оставляем топ-150 признаков (или все, если меньше)
-n_features_to_keep = min(150, len(feature_importance))
-top_features = feature_importance.head(n_features_to_keep)['feature'].tolist()
-
-# Добавляем категориальные признаки и target encoded признаки
-all_features_to_keep = top_features + categorical_features_filtered + [f'{col}_target_enc' for col in categorical_features_filtered]
-all_features_to_keep = [f for f in all_features_to_keep if f in X_train_encoded.columns]
-
-# Фильтруем признаки
-X_train_encoded = X_train_encoded[all_features_to_keep]
-X_test_encoded = X_test_encoded[all_features_to_keep]
-
-print(f"  Selected {len(all_features_to_keep)} features (from {len(X_train.columns)})", flush=True)
-print(f"  Top 10 features: {', '.join(feature_importance.head(10)['feature'].tolist())}", flush=True)
+# Не используем Feature Selection - все признаки важны для достижения 0.71
+# Вместо этого используем все признаки с правильной регуляризацией
+print("Using all features with proper regularization...", flush=True)
 
 # Кросс-валидация
 skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)
@@ -487,17 +461,17 @@ if not skip_lgb:
             'objective': 'binary',
             'metric': 'auc',
             'boosting_type': 'gbdt',
-            'num_leaves': 95,  # Оптимальный баланс сложности и регуляризации
-            'learning_rate': 0.015,  # Более консервативный learning rate
-            'feature_fraction': 0.75,  # Более агрессивная регуляризация
-            'bagging_fraction': 0.75,
+            'num_leaves': 127,  # Увеличено для большей сложности
+            'learning_rate': 0.01,  # Снижено для лучшей сходимости
+            'feature_fraction': 0.85,  # Увеличено для использования большего количества признаков
+            'bagging_fraction': 0.85,
             'bagging_freq': 5,
-            'min_child_samples': 25,  # Увеличено для предотвращения переобучения
-            'min_split_gain': 0.1,  # Увеличено для регуляризации
-            'reg_alpha': 0.3,  # Сильная регуляризация
-            'reg_lambda': 0.5,  # Сильная регуляризация
-            'max_depth': 12,  # Добавлено ограничение глубины
-            'min_data_in_leaf': 10,  # Добавлено для регуляризации
+            'min_child_samples': 20,  # Оптимальный баланс
+            'min_split_gain': 0.05,  # Снижено для большего количества разбиений
+            'reg_alpha': 0.1,  # Уменьшено для большей гибкости
+            'reg_lambda': 0.2,  # Уменьшено для большей гибкости
+            'max_depth': 15,  # Увеличено для большей сложности
+            'min_data_in_leaf': 8,  # Снижено для большей детализации
             'verbose': -1,
             'random_state': RANDOM_STATE
         }
@@ -506,8 +480,8 @@ if not skip_lgb:
             params,
             train_data,
             valid_sets=[val_data],
-            num_boost_round=2500,  # Оптимальный баланс итераций
-            callbacks=[lgb.early_stopping(stopping_rounds=100), lgb.log_evaluation(0)]
+            num_boost_round=5000,  # Увеличено для лучшей сходимости
+            callbacks=[lgb.early_stopping(stopping_rounds=200), lgb.log_evaluation(0)]
         )
         
         best_iter = model.best_iteration if model.best_iteration is not None else model.num_trees()
@@ -576,15 +550,15 @@ if not skip_cat:
         sys.stdout.flush()
         
         model = cb.CatBoostClassifier(
-            iterations=2500,  # Оптимальный баланс
-            learning_rate=0.015,  # Более консервативный learning rate
-            depth=7,  # Оптимальная глубина
-            l2_leaf_reg=5,  # Увеличено для регуляризации
+            iterations=5000,  # Увеличено для лучшей сходимости
+            learning_rate=0.01,  # Снижено для лучшей сходимости
+            depth=8,  # Увеличена глубина
+            l2_leaf_reg=3,  # Снижено для большей гибкости
             loss_function='Logloss',
             eval_metric='AUC',
             random_seed=RANDOM_STATE,
             verbose=100,
-            early_stopping_rounds=150,  # Увеличено для более стабильного early stopping
+            early_stopping_rounds=200,  # Увеличено для более стабильного early stopping
             min_data_in_leaf=15,  # Снижено для большей детализации
             thread_count=-1,
             bootstrap_type='Bayesian',  # Улучшенный бутстрап
@@ -678,23 +652,23 @@ if not skip_xgb:
         y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
         
         model = xgb.XGBClassifier(
-            n_estimators=2500,  # Оптимальный баланс
-            max_depth=7,  # Оптимальная глубина
-            learning_rate=0.015,  # Более консервативный learning rate
-            subsample=0.75,  # Более агрессивная регуляризация
-            colsample_bytree=0.75,
-            colsample_bylevel=0.75,  # Дополнительная регуляризация
-            min_child_weight=5,  # Увеличено для предотвращения переобучения
-            gamma=0.3,  # Сильная регуляризация
-            reg_alpha=0.3,  # Сильная регуляризация
-            reg_lambda=2.5,  # Сильная регуляризация
+            n_estimators=5000,  # Увеличено для лучшей сходимости
+            max_depth=8,  # Увеличена глубина
+            learning_rate=0.01,  # Снижено для лучшей сходимости
+            subsample=0.85,  # Увеличено для использования большего количества данных
+            colsample_bytree=0.85,
+            colsample_bylevel=0.85,  # Увеличено
+            min_child_weight=3,  # Снижено для большей детализации
+            gamma=0.1,  # Снижено для большей гибкости
+            reg_alpha=0.1,  # Снижено для большей гибкости
+            reg_lambda=1.5,  # Снижено для большей гибкости
             random_state=RANDOM_STATE,
             eval_metric='auc',
             use_label_encoder=False,
             tree_method='hist',
             grow_policy='lossguide',
             max_leaves=127,  # Добавлено ограничение листьев
-            early_stopping_rounds=150  # Увеличено для более стабильного early stopping
+            early_stopping_rounds=200  # Увеличено для более стабильного early stopping
         )
         
         model.fit(
@@ -775,27 +749,79 @@ meta_features_test = np.column_stack([
 # Финальные предсказания
 test_predictions = meta_model.predict_proba(meta_features_test)[:, 1]
 
-# Также пробуем простое взвешивание для сравнения
+# Пробуем несколько методов взвешивания и выбираем лучший
 auc_scores = np.array([lgb_auc, cat_auc, xgb_auc])
-weights_simple = auc_scores ** 3  # Кубическое взвешивание
-weights_simple = weights_simple / weights_simple.sum()
-simple_ensemble = (weights_simple[0] * test_predictions_lgb + 
-                    weights_simple[1] * test_predictions_cat + 
-                    weights_simple[2] * test_predictions_xgb)
-simple_auc = roc_auc_score(y_train, 
-    weights_simple[0] * oof_predictions_lgb + 
-    weights_simple[1] * oof_predictions_cat + 
-    weights_simple[2] * oof_predictions_xgb)
+
+# Метод 1: Кубическое взвешивание
+weights_cubic = auc_scores ** 3
+weights_cubic = weights_cubic / weights_cubic.sum()
+ensemble_cubic = (weights_cubic[0] * oof_predictions_lgb + 
+                  weights_cubic[1] * oof_predictions_cat + 
+                  weights_cubic[2] * oof_predictions_xgb)
+auc_cubic = roc_auc_score(y_train, ensemble_cubic)
+
+# Метод 2: Экспоненциальное взвешивание
+weights_exp = np.exp((auc_scores - auc_scores.min()) * 20)
+weights_exp = weights_exp / weights_exp.sum()
+ensemble_exp = (weights_exp[0] * oof_predictions_lgb + 
+                weights_exp[1] * oof_predictions_cat + 
+                weights_exp[2] * oof_predictions_xgb)
+auc_exp = roc_auc_score(y_train, ensemble_exp)
+
+# Метод 3: Оптимизация весов через scipy
+from scipy.optimize import minimize
+
+def objective(weights):
+    ensemble = (weights[0] * oof_predictions_lgb + 
+                weights[1] * oof_predictions_cat + 
+                weights[2] * oof_predictions_xgb)
+    return -roc_auc_score(y_train, ensemble)  # Минимизируем отрицательный AUC
+
+# Начальные веса
+initial_weights = np.array([1/3, 1/3, 1/3])
+bounds = [(0, 1), (0, 1), (0, 1)]
+constraint = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1}
+
+try:
+    result = minimize(objective, initial_weights, method='SLSQP', 
+                     bounds=bounds, constraints=constraint, options={'maxiter': 100})
+    if result.success:
+        weights_optimized = result.x
+        ensemble_optimized = (weights_optimized[0] * oof_predictions_lgb + 
+                             weights_optimized[1] * oof_predictions_cat + 
+                             weights_optimized[2] * oof_predictions_xgb)
+        auc_optimized = roc_auc_score(y_train, ensemble_optimized)
+    else:
+        auc_optimized = 0
+        weights_optimized = initial_weights
+except:
+    auc_optimized = 0
+    weights_optimized = initial_weights
 
 # Выбираем лучший метод
-if ensemble_auc > simple_auc:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Using Stacking (better than weighted average)", flush=True)
-    print(f"  Stacking AUC: {ensemble_auc:.5f} vs Weighted AUC: {simple_auc:.5f}", flush=True)
-else:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Using Weighted Average (better than stacking)", flush=True)
-    print(f"  Weighted AUC: {simple_auc:.5f} vs Stacking AUC: {ensemble_auc:.5f}", flush=True)
-    test_predictions = simple_ensemble
-    ensemble_auc = simple_auc
+methods = {
+    'Stacking': (ensemble_auc, test_predictions),
+    'Cubic': (auc_cubic, weights_cubic[0] * test_predictions_lgb + 
+              weights_cubic[1] * test_predictions_cat + 
+              weights_cubic[2] * test_predictions_xgb),
+    'Exponential': (auc_exp, weights_exp[0] * test_predictions_lgb + 
+                    weights_exp[1] * test_predictions_cat + 
+                    weights_exp[2] * test_predictions_xgb),
+    'Optimized': (auc_optimized, weights_optimized[0] * test_predictions_lgb + 
+                  weights_optimized[1] * test_predictions_cat + 
+                  weights_optimized[2] * test_predictions_xgb)
+}
+
+best_method = max(methods.items(), key=lambda x: x[1][0])
+ensemble_auc = best_method[1][0]
+test_predictions = best_method[1][1]
+
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Best ensemble method: {best_method[0]}", flush=True)
+print(f"  Stacking: {ensemble_auc:.5f}", flush=True)
+print(f"  Cubic: {auc_cubic:.5f}", flush=True)
+print(f"  Exponential: {auc_exp:.5f}", flush=True)
+if auc_optimized > 0:
+    print(f"  Optimized: {auc_optimized:.5f}", flush=True)
 
 print(f"[{datetime.now().strftime('%H:%M:%S')}] Individual model AUCs:")
 print(f"  LightGBM: {lgb_auc:.5f}")
